@@ -55,6 +55,82 @@ flowchart LR
 
 ### MarketDataGateway
 
+market data websocket 总流程 flow chart (连接 -->  消费 --> 断线 --> 重连):
+
+```mermaid
+flowchart TD
+A["run_forever()"] --> B["tracker.new_session()"]
+B --> C[build ws url]
+C --> D{connect WS}
+D --> |success| E[connected]
+D --> |exception| X[except: disconnect]
+
+E --> F["_consume(ws)"]
+F --> |returns normally| G[reset backoff]
+G --> B
+
+X --> H[compute backoff + jitter]
+H --> I["sleep(backoff)"]
+I --> B
+```
+
+_consume 细节
+
+```mermaid
+flowchart TD
+
+A["_consume(ws)"] --> B[last_msg_ns = now]
+B --> C{loop}
+C --> D["await wait_for(ws.recv(), timeout=recv_timeout_s)"]
+
+D --> |got raw msg| E[ts_recv = monotic_ns]
+E --> F[last_msg_ns = ts_recv]
+F --> G[parse raw -> MarketEvent?]
+G --> |me != None| H["on_event(me)"]
+G --> |None| C
+H --> C
+
+D --> |TimeoutError| I[now = monotic_ns]
+I --> J{now - last_msg_ns > stale_timeout?}
+J --> |no| C
+J --> |yes| K[raise RuntimeError stale websocket]
+```
+
+断网事故演练
+
+```mermaid
+sequenceDiagram
+    participant OS as Network/OS
+    participant GW as Gateway(run_forever)
+    participant WS as WebSocket
+    participant REC as Recorder
+
+    GW->>WS: connect()
+    WS-->>GW: connected
+    loop msgs
+        WS-->>GW: raw bookTicker
+        GW->>GW: parse -> MarketEvent
+        GW->>REC: append(ndjson)
+    end
+
+    OS-->>WS: network down (no packets)
+    note over WS,GW: socket may not close immediately
+    GW->>WS: recv() (wait_for timeout)
+    GW->>GW: stale check
+    GW-->>GW: raise RuntimeError (stale)
+    GW->>GW: except -> log disconnect
+    GW->>GW: backoff sleep
+    OS-->>WS: network up
+    GW->>WS: reconnect()
+    WS-->>GW: connected
+
+```
+
+行情不能假设连续、有序，因为接收到的只是交易所通过网络推送的观察结果。
+网络会断、会抖，WebSocket 不保证补发，也不保证顺序。
+因此在MarketData Gateway 里，断网重连会导致接收时间戳出现断层，而这并不对应真实市场的停顿。
+因此，交易系统只能以事件（event）为基本单位，通过状态机来容忍缺失、乱序和重复，而不能依赖连续、有序的数据假设。
+
 ### SimExecution
 
 ### 接 user data stream + 真回报 (可选 testnet)

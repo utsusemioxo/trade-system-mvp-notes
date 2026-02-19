@@ -62,3 +62,13 @@ flowchart LR
 ### 风控 + 限速
 
 ### 总结
+
+### Appendix A. Logging
+
+为了解释系统行为，打log，但是记录所有发生的事情，log会过多。
+
+开发 MD Gateway 的时候，打log记录：
+- connect / connected
+- disconnect / reconnect
+- warn / error 异常
+- session 关键状态变化

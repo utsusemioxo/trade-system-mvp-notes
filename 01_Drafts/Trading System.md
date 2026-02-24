@@ -131,7 +131,93 @@ sequenceDiagram
 因此在MarketData Gateway 里，断网重连会导致接收时间戳出现断层，而这并不对应真实市场的停顿。
 因此，交易系统只能以事件（event）为基本单位，通过状态机来容忍缺失、乱序和重复，而不能依赖连续、有序的数据假设。
 
-### SimExecution
+### Recorder & Replay
+
+> Replay 比回测更重要，因为 replay 复现的是“系统行为”, 而回测只验证“策略假设”。在真实交易中，亏钱往往来自系统行为错误，而不是策略公式错误。
+
+Replay 是可解释性（Explainability）的技术基础。
+
+> 回测主要验证策略在理想化市场条件下是否赚钱，但真实交易的风险更多来自于系统行为本身。Replay 用真实行情事件作为输入，复现断线、重连、时间戳间隔和顺序变化，验证系统在真实条件下的行为一致性。如果同一份事件在 replay 和 live 下产生不同行为，那说明系统存在 bug，而不是市场变化。因此，在交易系统工程中，replay 比 backtest 更重要，是复现和可演进的基础。
+
+> Replay is for correctness, backtest is for profitability. A system that can't replay can't be trusted.
+
+
+### Event Bus
+> EventBus 是单线程的事件队列，系统里的所有模块都只通过它交换事件。
+
+如果不用EventBus，只有一条路径，如果要拓展新的模块（比如Strategy，Metrics，Risk...）就要改MarketDataGateway（可能有多个）
+
+```mermaid
+flowchart LR
+    BinanceWS[Binance WebSocket]
+    Gateway[MarketData Gateway]
+    Recorder[Recorder]
+
+    BinanceWS --> Gateway
+    Gateway --> Recorder
+```
+用了 EventBus 之后，Gateway 只连接 Bus，Bus 决定事件流向，下游模块互不认识。
+```mermaid
+flowchart LR
+    BinanceWS[Binance WebSocket]
+    Gateway[MarketData Gateway]
+    Bus[EventBus<br/>in-memory queue]
+    
+    Recorder[Recorder]
+    Strategy[Strategy]
+    Metrics[Metrics]
+    Risk[Risk]
+
+    BinanceWS --> Gateway
+    Gateway --> |publish MarketEvent| Bus
+
+    Bus --> |market| Recorder
+    Bus --> |market| Strategy
+    Bus --> |market| Metrics
+    Bus --> |market| Risk
+```
+```mermaid
+flowchart LR
+	LiveGW[Live Gateway]
+	ReplayGW[Replay Gateway]
+	Bus[EventBus]
+	
+	Recorder[Recorder]
+	Strategy[Strategy]
+	
+	LiveGW --> Bus
+	ReplayGW --> Bus
+	
+	Bus --> Recorder
+	Bus --> Strategy
+```
+
+一些关键的问题：
+- 为什么Gateway不应该直接调用Recorder？
+	- 因为Gateway的职责是接入外部市场，只负责publish event，recorder是系统内部的一个消费者，Gateway不应该知道任何内部模块的存在，谁来消费不关Gateway的事情。
+	- 如果Gateway直接调用recorder，会导致耦合，一旦新增Strategy，Metrics，Risk等模块，就需要不断改Gateway
+- 如果handler很慢，会导致什么？
+	- 因为EventBus目前是单线程分发，任意一个handler变慢，整个事件流会被拖慢，queue会开始积压，最终导致内存压力甚至OOM
+	- 因果链：handler慢 --> 单线程分发被阻塞 --> producer 继续 publish --> queue 积压 --> latency 飙升 / OOM
+- queue慢了怎么办？为什么必须有策略
+	- 考虑：市场可以无限快，内存是有限的，延迟堆积比丢数据更危险
+	- 所以策略选项：
+		- drop newest
+		- drop oldest
+		- block producer（危险）
+		- spill to disk（复杂）
+- 为什么replay不应该知道recorder的存在
+	- 因为replay和live必须是可替换的event source。
+	- replay只负责emit event，至于谁接，必须交给EventBus
+- 如果以后加Strategy/OMS，需要改Gateway吗
+	- 不需要。Strategy/OMS是事件消费者，只需要订阅EventBus，Gateway只面向event，不面向模块。拓展系统能力，不修改事件源。
+总结：
+> EventBus的作用，是让系统里的事件流动起来。
+> Gateway只负责产生事件，不负责处理。
+> Replay和live是等价的事件源。
+> 单线程保证顺序和状态安全。
+> queue满说明系统过载，必须有丢弃或限流策略。
+> 新功能只能通过订阅事件拓展，而不能修改Gateway。
 
 ### 接 user data stream + 真回报 (可选 testnet)
 

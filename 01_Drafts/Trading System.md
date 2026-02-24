@@ -221,6 +221,66 @@ flowchart LR
 > queue满说明系统过载，必须有丢弃或限流策略。
 > 新功能只能通过订阅事件拓展，而不能修改Gateway。
 
+### OMS State Machine (core)
+
+> 交易不是一次动作，而是一段不可靠、可能乱序、可能重复的过程；
+> 只有状态机，才能在不可靠输入下保证系统行为正确。
+
+下单不等于成交，而是：
+1. 我发了一个下单意图
+2. 交易所可能收到了
+3. 交易所可能回了ACK
+4. 成交可能分多次会来
+5. 回报可能乱序、重复、延迟
+6. 中途可能撤单、拒单、断线
+
+状态机解决的问题是：当前状态下，收到这个事件，系统应该怎么做才是对的？
+
+同时同一段market + order回放，OMS状态庄毅必须一模一样，否则说明系统逻辑有bug。
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW : send OrderIntent
+
+    NEW --> ACK : exchange ACK
+    NEW --> REJECTED : exchange reject
+
+    ACK --> PARTIAL : partial fill
+    ACK --> FILLED : full fill
+    ACK --> CANCELED : cancel ack
+
+    PARTIAL --> PARTIAL : more fills
+    PARTIAL --> FILLED : remaining filled
+    PARTIAL --> CANCELED : cancel remaining
+
+    FILLED --> [*]
+    CANCELED --> [*]
+    REJECTED --> [*]
+```
+
+每一个箭头，都是当前状态下允许的唯一反应。
+
+关键的事故处理：
+- 乱序：FILLED可能先于ACK
+- 重复：同一个 fill 回3次
+- 延迟：cancel 很晚才到
+而 OMS 状态机需要满足：无论 Event 怎么来，最终状态都是对的，而且不会 double count。
+
+> OMS 不是发单模块，而是交易系统的事实引擎；
+> OMS 用状态机把不可靠的外部回报，约束成可靠的内部状态。
+
+之前部分的小总结：
+
+```mermaid
+flowchart LR
+    MD[MarketData Gateway] --> BUS[EventBus]
+    BUS --> REC[Recorder]
+    BUS --> OMS[OMS State Machine]
+
+    REC --> REPLAY[Replay Gateway]
+    REPLAY --> BUS
+```
+
 ### 接 user data stream + 真回报 (可选 testnet)
 
 ### 风控 + 限速

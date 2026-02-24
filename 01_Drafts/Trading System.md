@@ -145,7 +145,8 @@ Replay 是可解释性（Explainability）的技术基础。
 ### Event Bus
 > EventBus 是单线程的事件队列，系统里的所有模块都只通过它交换事件。
 
-如果不用EventBus，只有一条路径，如果要拓展新的模块（比如Strategy，Metrics，Risk...）就要改MarketDataGateway（可能有多个）
+如果不用EventBus，只有一条路径，(强绑定，单路)如果要拓展新的模块（比如Strategy，Metrics，Risk...）就要改MarketDataGateway（可能有多个）
+Gateway 知道所有下游，加模块要改GW，GW变胖，可维护性差。
 
 ```mermaid
 flowchart LR
@@ -157,6 +158,7 @@ flowchart LR
     Gateway --> Recorder
 ```
 用了 EventBus 之后，Gateway 只连接 Bus，Bus 决定事件流向，下游模块互不认识。
+Gateway只知道 Bus，加模块只需要subscribe。
 ```mermaid
 flowchart LR
     BinanceWS[Binance WebSocket]
@@ -213,7 +215,7 @@ flowchart LR
 	- 不需要。Strategy/OMS是事件消费者，只需要订阅EventBus，Gateway只面向event，不面向模块。拓展系统能力，不修改事件源。
 总结：
 > EventBus的作用，是让系统里的事件流动起来。
-> Gateway只负责产生事件，不负责处理。
+> Gateway只负责产生事件，不负责处理。职责仅仅是产生MarketEvent并publish到EventBus。
 > Replay和live是等价的事件源。
 > 单线程保证顺序和状态安全。
 > queue满说明系统过载，必须有丢弃或限流策略。
